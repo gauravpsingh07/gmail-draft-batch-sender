@@ -1,0 +1,433 @@
+{
+  "name": "Gmail Draft Batch Sender",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "41a77555-e811-4942-91de-10d607cdfd12",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1340,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const TIME_ZONE = 'America/New_York';\nconst DAILY_LIMIT = 300;\nlet MIN_BATCH_SIZE = 9;\nlet MAX_BATCH_SIZE = 18;\nlet MIN_EMAIL_DELAY_SECONDS = 8;\nlet MAX_EMAIL_DELAY_SECONDS = 25;\nlet MIN_BATCH_DELAY_MINUTES = 5;\nlet MAX_BATCH_DELAY_MINUTES = 7;\nconst FORCE_TEST_MODE = false;\nconst TEST_SUBJECT_PREFIX = '[N8N TEST]';\nconst TEST_DAILY_LIMIT = 2;\nconst TEST_MIN_BATCH_SIZE = 1;\nconst TEST_MAX_BATCH_SIZE = 2;\nconst TEST_DRAFT_SCAN_LIMIT = 100;\n\n// Testing notes:\n// - Set FORCE_TEST_MODE = true only during controlled testing.\n// - Test drafts must have subjects that start with TEST_SUBJECT_PREFIX.\n// - Confirm TEST_DAILY_LIMIT = 2 before a test run.\n// - Confirm TEST_MIN_BATCH_SIZE = 1 and TEST_MAX_BATCH_SIZE = 2 before a test run.\n// - Set FORCE_TEST_MODE back to false before real sending.\n// - This workflow sends existing Gmail drafts through users.drafts.send and does not create, edit, or delete drafts manually.\n\nconst staticData = $getWorkflowStaticData('global');\n\nfunction randomInt(min, max) {\n  return Math.floor(Math.random() * (max - min + 1)) + min;\n}\n\nfunction getEasternDateKey(date) {\n  const parts = new Intl.DateTimeFormat('en-CA', {\n    timeZone: TIME_ZONE,\n    year: 'numeric',\n    month: '2-digit',\n    day: '2-digit',\n  }).formatToParts(date);\n\n  const values = Object.fromEntries(\n    parts\n      .filter((part) => part.type !== 'literal')\n      .map((part) => [part.type, part.value]),\n  );\n\n  return `${values.year}-${values.month}-${values.day}`;\n}\n\nconst todayKey = getEasternDateKey(new Date());\n\n// Reset the daily counter automatically when the Eastern calendar date changes.\nif (staticData.date !== todayKey) {\n  staticData.date = todayKey;\n  staticData.sentToday = 0;\n}\n\nconst dailyLimit = FORCE_TEST_MODE ? TEST_DAILY_LIMIT : DAILY_LIMIT;\nconst minBatchSize = FORCE_TEST_MODE ? TEST_MIN_BATCH_SIZE : MIN_BATCH_SIZE;\nconst maxBatchSize = FORCE_TEST_MODE ? TEST_MAX_BATCH_SIZE : MAX_BATCH_SIZE;\nconst sentToday = Number(staticData.sentToday || 0);\nconst remainingToday = Math.max(dailyLimit - sentToday, 0);\nconst allowed = remainingToday > 0;\nconst batchSize = allowed ? Math.min(randomInt(minBatchSize, maxBatchSize), remainingToday) : 0;\nconst listMaxResults = FORCE_TEST_MODE ? TEST_DRAFT_SCAN_LIMIT : batchSize;\n\nreturn [\n  {\n    json: {\n      allowed,\n      reason: allowed\n        ? (FORCE_TEST_MODE ? 'FORCE_TEST_MODE_ACTIVE' : 'DAILY_LIMIT_AVAILABLE')\n        : 'DAILY_LIMIT_REACHED',\n      todayKey,\n      dailyLimit,\n      sentToday,\n      remainingToday,\n      batchSize,\n      listMaxResults,\n      minEmailDelaySeconds: MIN_EMAIL_DELAY_SECONDS,\n      maxEmailDelaySeconds: MAX_EMAIL_DELAY_SECONDS,\n      minBatchDelayMinutes: MIN_BATCH_DELAY_MINUTES,\n      maxBatchDelayMinutes: MAX_BATCH_DELAY_MINUTES,\n      forceTestMode: FORCE_TEST_MODE,\n      testSubjectPrefix: TEST_SUBJECT_PREFIX,\n    },\n  },\n];"
+      },
+      "id": "e93b4eea-68a6-43a5-a3ff-936d871c4c51",
+      "name": "Check Daily Limit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1080,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.allowed }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "69d04804-220d-4f14-9b4c-8d17f8d6714b",
+      "name": "Can Send Today?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -820,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://gmail.googleapis.com/gmail/v1/users/me/drafts?maxResults={{ $json.listMaxResults }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleOAuth2Api",
+        "options": {}
+      },
+      "id": "89bf9284-8c64-4a13-9ef0-6113e3282df0",
+      "name": "List Gmail Drafts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -540,
+        -100
+      ],
+      "credentials": {
+        "googleOAuth2Api": {
+          "id": "REPLACE_AFTER_IMPORT",
+          "name": "Google OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const config = $('Check Daily Limit').item.json;\nconst drafts = Array.isArray($json.drafts) ? $json.drafts : [];\nconst draftsReturned = drafts.length;\n\nif (draftsReturned === 0) {\n  console.log('No Gmail drafts returned. Nothing to send.');\n  return [];\n}\n\n// users.drafts.list returns draft IDs and message IDs only. Metadata is fetched next before any draft can be sent.\nreturn drafts\n  .filter((draft) => draft && draft.id)\n  .map((draft) => ({\n    json: {\n      draftId: draft.id,\n      messageId: draft.message?.id || null,\n      batchSize: config.batchSize,\n      listedDraftsReturned: draftsReturned,\n      dailyLimit: config.dailyLimit,\n      minEmailDelaySeconds: config.minEmailDelaySeconds,\n      maxEmailDelaySeconds: config.maxEmailDelaySeconds,\n      minBatchDelayMinutes: config.minBatchDelayMinutes,\n      maxBatchDelayMinutes: config.maxBatchDelayMinutes,\n      forceTestMode: config.forceTestMode,\n      testSubjectPrefix: config.testSubjectPrefix,\n    },\n  }));"
+      },
+      "id": "087ea532-86d7-4aaf-859d-d8432154998f",
+      "name": "Normalize Draft Batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -260,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://gmail.googleapis.com/gmail/v1/users/me/drafts/{{$json.draftId}}?format=metadata&metadataHeaders=Subject",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleOAuth2Api",
+        "options": {}
+      },
+      "id": "d8aa3c43-3ccb-42aa-a5ed-df751d3ff5c1",
+      "name": "Get Draft Metadata",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        20,
+        -100
+      ],
+      "credentials": {
+        "googleOAuth2Api": {
+          "id": "REPLACE_AFTER_IMPORT",
+          "name": "Google OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const config = $('Check Daily Limit').item.json;\nconst inputItems = $input.all();\nconst forceTestMode = Boolean(config.forceTestMode);\nconst testSubjectPrefix = config.testSubjectPrefix || '[N8N TEST]';\nconst batchSize = Number(config.batchSize || 0);\n\nfunction getSubject(headers) {\n  if (!Array.isArray(headers)) {\n    return '';\n  }\n\n  const header = headers.find((entry) => String(entry.name || '').toLowerCase() === 'subject');\n  return header?.value || '';\n}\n\nconst candidates = inputItems.map((item) => {\n  const draft = item.json;\n  const subject = getSubject(draft.message?.payload?.headers);\n\n  return {\n    draftId: draft.id,\n    messageId: draft.message?.id || null,\n    subject,\n  };\n});\n\nconst eligibleDrafts = forceTestMode\n  ? candidates.filter((draft) => draft.subject.startsWith(testSubjectPrefix))\n  : candidates;\n\nconst selectedDrafts = eligibleDrafts.slice(0, batchSize);\n\nif (forceTestMode) {\n  const skipped = candidates\n    .filter((draft) => !draft.subject.startsWith(testSubjectPrefix))\n    .map((draft) => ({ draftId: draft.draftId, subject: draft.subject }));\n\n  if (skipped.length > 0) {\n    console.log(JSON.stringify({\n      level: 'info',\n      message: 'FORCE_TEST_MODE skipped drafts without the required subject prefix.',\n      testSubjectPrefix,\n      skipped,\n    }));\n  }\n\n  if (selectedDrafts.length === 0) {\n    console.log(JSON.stringify({\n      level: 'info',\n      message: 'FORCE_TEST_MODE found no drafts with the required subject prefix. Nothing will be sent.',\n      testSubjectPrefix,\n    }));\n    return [];\n  }\n}\n\n// In production mode, this node does not require the test prefix. In test mode, only matching subjects continue to Send Draft.\nreturn selectedDrafts.map((draft) => ({\n  json: {\n    draftId: draft.draftId,\n    messageId: draft.messageId,\n    subject: draft.subject,\n    batchSize,\n    draftsReturned: selectedDrafts.length,\n    listedDraftsReturned: candidates.length,\n    eligibleDraftsReturned: eligibleDrafts.length,\n    dailyLimit: config.dailyLimit,\n    minEmailDelaySeconds: config.minEmailDelaySeconds,\n    maxEmailDelaySeconds: config.maxEmailDelaySeconds,\n    minBatchDelayMinutes: config.minBatchDelayMinutes,\n    maxBatchDelayMinutes: config.maxBatchDelayMinutes,\n    forceTestMode,\n    testSubjectPrefix,\n  },\n}));"
+      },
+      "id": "bed7d4dd-83a2-4f73-bffa-f0c7fbac854b",
+      "name": "Apply Test Subject Filter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "17621c5e-14f6-4d72-a2c1-79c0d75708de",
+      "name": "Loop Through Drafts",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        580,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://gmail.googleapis.com/gmail/v1/users/me/drafts/send",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleOAuth2Api",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"id\": \"{{ $json.draftId }}\"\n}",
+        "options": {}
+      },
+      "id": "1dc57d68-4108-4630-b4ba-4c16529ea3c4",
+      "name": "Send Draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        860,
+        20
+      ],
+      "credentials": {
+        "googleOAuth2Api": {
+          "id": "REPLACE_AFTER_IMPORT",
+          "name": "Google OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const draftItem = $('Loop Through Drafts').item.json;\nconst minDelay = Number(draftItem.minEmailDelaySeconds || 8);\nconst maxDelay = Number(draftItem.maxEmailDelaySeconds || 25);\n\nfunction randomInt(min, max) {\n  return Math.floor(Math.random() * (max - min + 1)) + min;\n}\n\n// users.drafts.send has already sent the existing draft. This only chooses the pause before the next draft.\nreturn [\n  {\n    json: {\n      draftId: draftItem.draftId,\n      subject: draftItem.subject,\n      sentMessageId: $json.id || null,\n      delaySeconds: randomInt(minDelay, maxDelay),\n      minEmailDelaySeconds: minDelay,\n      maxEmailDelaySeconds: maxDelay,\n    },\n  },\n];"
+      },
+      "id": "e3f547e2-c45c-45ed-9c7e-6d2172f1abde",
+      "name": "Generate Random Email Delay",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.delaySeconds }}",
+        "unit": "seconds"
+      },
+      "id": "1927b0b4-4904-4f77-846f-575a503a7443",
+      "name": "Wait Random Email Delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [
+        1380,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const TIME_ZONE = 'America/New_York';\nconst staticData = $getWorkflowStaticData('global');\nconst draftItem = $('Loop Through Drafts').item.json;\n\nfunction getEasternDateKey(date) {\n  const parts = new Intl.DateTimeFormat('en-CA', {\n    timeZone: TIME_ZONE,\n    year: 'numeric',\n    month: '2-digit',\n    day: '2-digit',\n  }).formatToParts(date);\n\n  const values = Object.fromEntries(\n    parts\n      .filter((part) => part.type !== 'literal')\n      .map((part) => [part.type, part.value]),\n  );\n\n  return `${values.year}-${values.month}-${values.day}`;\n}\n\nconst todayKey = getEasternDateKey(new Date());\n\n// Count only confirmed successful sends, and reset if a long manual run crosses into a new Eastern date.\nif (staticData.date !== todayKey) {\n  staticData.date = todayKey;\n  staticData.sentToday = 0;\n}\n\nstaticData.sentToday = Number(staticData.sentToday || 0) + 1;\n\nreturn [\n  {\n    json: {\n      sentToday: staticData.sentToday,\n      sentDraftId: draftItem.draftId,\n      subject: draftItem.subject,\n      timestamp: new Date().toISOString(),\n      batchSize: draftItem.batchSize,\n      draftsReturned: draftItem.draftsReturned,\n      listedDraftsReturned: draftItem.listedDraftsReturned,\n      eligibleDraftsReturned: draftItem.eligibleDraftsReturned,\n      dailyLimit: draftItem.dailyLimit,\n      minBatchDelayMinutes: draftItem.minBatchDelayMinutes,\n      maxBatchDelayMinutes: draftItem.maxBatchDelayMinutes,\n      forceTestMode: draftItem.forceTestMode,\n      testSubjectPrefix: draftItem.testSubjectPrefix,\n    },\n  },\n];"
+      },
+      "id": "00d425b2-b9a8-4476-84ea-9bc3e452d1fb",
+      "name": "Increment Daily Counter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1640,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const TIME_ZONE = 'America/New_York';\nconst staticData = $getWorkflowStaticData('global');\nconst batchItems = $input.all().map((item) => item.json);\nconst firstBatchItem = batchItems[0] || {};\nconst config = $('Check Daily Limit').item.json;\nconst dailyLimit = Number(firstBatchItem.dailyLimit || config.dailyLimit || 300);\nconst draftsReturned = Number(firstBatchItem.draftsReturned || batchItems.length || 0);\nconst batchSize = Number(firstBatchItem.batchSize || draftsReturned || 0);\nconst minBatchDelayMinutes = Number(firstBatchItem.minBatchDelayMinutes || config.minBatchDelayMinutes || 5);\nconst maxBatchDelayMinutes = Number(firstBatchItem.maxBatchDelayMinutes || config.maxBatchDelayMinutes || 7);\n\nfunction randomInt(min, max) {\n  return Math.floor(Math.random() * (max - min + 1)) + min;\n}\n\nfunction getEasternDateKey(date) {\n  const parts = new Intl.DateTimeFormat('en-CA', {\n    timeZone: TIME_ZONE,\n    year: 'numeric',\n    month: '2-digit',\n    day: '2-digit',\n  }).formatToParts(date);\n\n  const values = Object.fromEntries(\n    parts\n      .filter((part) => part.type !== 'literal')\n      .map((part) => [part.type, part.value]),\n  );\n\n  return `${values.year}-${values.month}-${values.day}`;\n}\n\nconst todayKey = getEasternDateKey(new Date());\n\n// Keep static data aligned with the Eastern calendar date during long manual runs.\nif (staticData.date !== todayKey) {\n  staticData.date = todayKey;\n  staticData.sentToday = 0;\n}\n\nconst sentToday = Number(staticData.sentToday || 0);\nconst remainingToday = Math.max(dailyLimit - sentToday, 0);\nlet continueSending = true;\nlet reason = 'CONTINUE_NEXT_BATCH';\n\nif (sentToday >= dailyLimit) {\n  continueSending = false;\n  reason = 'DAILY_LIMIT_REACHED';\n} else if (draftsReturned === 0 || draftsReturned < batchSize) {\n  continueSending = false;\n  reason = firstBatchItem.forceTestMode ? 'NO_MATCHING_TEST_DRAFTS_REMAINING' : 'NO_DRAFTS_REMAINING';\n}\n\nconst batchDelayMinutes = continueSending ? randomInt(minBatchDelayMinutes, maxBatchDelayMinutes) : 0;\n\nreturn [\n  {\n    json: {\n      continueSending,\n      reason,\n      todayKey,\n      dailyLimit,\n      sentToday,\n      remainingToday,\n      draftsReturned,\n      listedDraftsReturned: firstBatchItem.listedDraftsReturned || null,\n      eligibleDraftsReturned: firstBatchItem.eligibleDraftsReturned || null,\n      previousBatchSize: batchSize,\n      batchDelayMinutes,\n      minBatchDelayMinutes,\n      maxBatchDelayMinutes,\n    },\n  },\n];"
+      },
+      "id": "0fb9ecea-a81d-4115-89b6-2a691b1ecf0a",
+      "name": "Check Whether To Continue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.continueSending }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "1abb1d6f-6272-4c8c-ace5-8be67d38cadc",
+      "name": "Continue Next Batch?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        -260
+      ]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.batchDelayMinutes }}",
+        "unit": "minutes"
+      },
+      "id": "7f673cb5-06cc-4f62-bb7d-7d79200af1aa",
+      "name": "Wait Random Batch Delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [
+        1380,
+        -340
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check Daily Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Daily Limit": {
+      "main": [
+        [
+          {
+            "node": "Can Send Today?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Can Send Today?": {
+      "main": [
+        [
+          {
+            "node": "List Gmail Drafts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "List Gmail Drafts": {
+      "main": [
+        [
+          {
+            "node": "Normalize Draft Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Draft Batch": {
+      "main": [
+        [
+          {
+            "node": "Get Draft Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Draft Metadata": {
+      "main": [
+        [
+          {
+            "node": "Apply Test Subject Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Test Subject Filter": {
+      "main": [
+        [
+          {
+            "node": "Loop Through Drafts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Through Drafts": {
+      "main": [
+        [
+          {
+            "node": "Check Whether To Continue",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Draft": {
+      "main": [
+        [
+          {
+            "node": "Generate Random Email Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Random Email Delay": {
+      "main": [
+        [
+          {
+            "node": "Wait Random Email Delay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Random Email Delay": {
+      "main": [
+        [
+          {
+            "node": "Increment Daily Counter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Increment Daily Counter": {
+      "main": [
+        [
+          {
+            "node": "Loop Through Drafts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Whether To Continue": {
+      "main": [
+        [
+          {
+            "node": "Continue Next Batch?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue Next Batch?": {
+      "main": [
+        [
+          {
+            "node": "Wait Random Batch Delay",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Wait Random Batch Delay": {
+      "main": [
+        [
+          {
+            "node": "Check Daily Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/New_York"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2026-05-03T00:00:00.000Z",
+  "versionId": "f4f42c74-2d8e-41b3-91a3-35a3b30f31c8"
+}

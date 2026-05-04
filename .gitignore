@@ -1,0 +1,28 @@
+# Local environment secrets
+.env
+.env.*
+.env copy*
+!.env.example
+
+# n8n local persistent data: credentials, database, logs, runtime state
+n8n_data/
+.n8n/
+
+# Logs and temporary files
+logs/
+*.log
+*.tmp
+*.temp
+
+# Docker/local runtime artifacts
+docker-compose.override.yml
+
+# Dependency folders, if added later
+node_modules/
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
