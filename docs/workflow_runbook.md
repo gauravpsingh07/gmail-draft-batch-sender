@@ -2,21 +2,22 @@
 
 ## Behavior
 
-- Trigger: manual execution only
+- Manual Trigger starts or resumes a sending session
+- Schedule Trigger runs every 1 minute as the automatic runner
 - Daily limit: 300 drafts per Eastern calendar date
 - Batch size: random 9 to 18 drafts
-- Batch delay: random 5 to 7 minutes
+- Batch delay: random 5 to 7 minutes using `nextBatchAllowedAt`
 - Per-email delay: random 8 to 25 seconds
 
-The workflow loops in the same manual execution:
+The workflow sends at most one batch per execution:
 
 ```text
-Check daily limit -> list drafts -> fetch draft metadata -> apply test subject filter -> send random batch -> wait random batch delay -> check daily limit -> list next batch
+Manual start or scheduled check -> check runner state -> list drafts -> optional test metadata filter -> send one batch -> set nextBatchAllowedAt -> stop
 ```
 
-It stops when 300 drafts have been sent for the Eastern date, when no drafts remain, when you manually stop the execution, or when Gmail/API returns an error.
+It no longer uses a long-running `Wait Random Batch Delay` loop. The only Wait node left is the short per-email delay inside the current batch.
 
-Test mode includes a subject prefix safety filter. When `FORCE_TEST_MODE = true`, the workflow only sends drafts whose subject starts with `[N8N TEST]`. Production mode does not use that prefix filter unless you intentionally keep test mode enabled or customize the filter.
+Test mode includes a subject prefix safety filter. When `FORCE_TEST_MODE = true`, the workflow only sends drafts whose subject starts with `[N8N TEST]`. Test mode disables `sendingEnabled` after one safe test batch. Production mode does not use that prefix filter unless you intentionally keep test mode enabled or customize the filter.
 
 ## Gmail Send Endpoint
 
@@ -36,7 +37,7 @@ JSON body:
 
 The draft ID belongs in the JSON body, not in the URL path.
 
-## Running Manually
+## Start Docker
 
 1. Start Docker Desktop.
 2. Run:
@@ -46,10 +47,47 @@ docker compose up -d
 ```
 
 3. Open `http://localhost:5678`.
-4. Open the workflow.
-5. Click `Execute Workflow`.
 
-No workflow activation is required for schedule-based sending, because schedule-based sending has been removed.
+## Start Sending
+
+1. Confirm the workflow is active.
+2. Open the workflow.
+3. Click `Execute Workflow` once.
+
+The manual run sets `sendingEnabled = true`, sends the first batch if the daily limit allows, and stores the next randomized batch time. After that, the active Schedule Trigger continues automatically.
+
+## Confirm Runner State
+
+Open the latest execution and inspect:
+
+- `Check Daily Limit And Runner State`
+- `Set Next Batch Time And Session State`
+
+Useful fields:
+
+- `sendingEnabled`
+- `nextBatchAllowedAt`
+- `sentToday`
+- `dailyLimit`
+- `reason`
+
+`NEXT_BATCH_SCHEDULED` means the next one-minute schedule checks will wait until `nextBatchAllowedAt`.
+
+During an active batch, `Check Daily Limit And Runner State` temporarily reserves `nextBatchAllowedAt` to prevent overlapping scheduled executions. `Set Next Batch Time And Session State` overwrites it with the real 5 to 7 minute next-batch time when the batch finishes.
+
+## Stop Sending
+
+Deactivate the workflow in n8n.
+
+This stops future Schedule Trigger runs. If a batch execution is currently running, open the execution and stop it if needed. Messages already sent by Gmail remain sent.
+
+## Resume Sending
+
+1. Activate the workflow.
+2. Open the workflow.
+3. Click `Execute Workflow` once.
+
+Manual execution starts or resumes the session and allows the next batch immediately if the daily limit allows.
 
 ## Static Data
 
@@ -57,57 +95,42 @@ The workflow stores these keys in global workflow static data:
 
 - `date`
 - `sentToday`
+- `sendingEnabled`
+- `nextBatchAllowedAt`
 
-`sentToday` increments only after `Send Draft` succeeds. If the workflow is stopped mid-run, `sentToday` reflects the successful sends that already reached `Increment Daily Counter` during that run.
+`sentToday` increments only after `Send Draft` succeeds. If an execution is stopped mid-batch, `sentToday` reflects successful sends that already reached `Increment Daily Counter`.
 
-The counter resets automatically when the Eastern calendar date changes. The reset check runs at the start of the manual execution, before each new batch, and before each successful send is counted.
+The counter resets automatically when the Eastern calendar date changes. A new day does not automatically enable sending unless `sendingEnabled` was intentionally left true. When the daily limit is reached, the workflow sets `sendingEnabled = false`.
 
-n8n treats manual canvas executions differently from production trigger executions. Use one manual sending session as the safe operating unit for the day, and inspect node outputs during testing to confirm the counter behavior in your local n8n version.
+## Errors
 
-## Stop the Workflow
-
-To stop a running session:
-
-1. Open the running execution in n8n.
-2. Click the stop/cancel control for the execution.
-3. Confirm the execution is no longer running.
-
-Messages already sent by Gmail remain sent. The workflow does not edit or delete sent mail.
-
-## View Executions and Logs
-
-In n8n:
-
-1. Open the workflow.
-2. Open the Executions view.
-3. Inspect the latest execution.
-4. Click nodes to view input/output data.
-
-If Gmail/API returns an error in `List Gmail Drafts`, `Get Draft Metadata`, or `Send Draft`, the execution stops so you can inspect the failure before continuing.
+If Gmail/API returns an error in `List Gmail Drafts`, `Get Draft Metadata`, or `Send Draft`, the workflow logs the error in `Log Gmail API Error And Disable Session`, sets `sendingEnabled = false`, and stops that execution path.
 
 ## Reset Static Data
 
-Usually, do not reset static data. It resets automatically when the Eastern date changes.
+Usually, do not reset static data. It resets `sentToday` automatically when the Eastern date changes.
 
 If you must reset it:
 
-1. Open `Check Daily Limit`.
+1. Open `Check Daily Limit And Runner State`.
 2. Temporarily add this block immediately after `const staticData = $getWorkflowStaticData('global');`:
 
 ```javascript
 staticData.date = null;
 staticData.sentToday = 0;
+staticData.sendingEnabled = false;
+staticData.nextBatchAllowedAt = null;
 return [{ json: { reset: true, timestamp: new Date().toISOString() } }];
 ```
 
-3. Save and run one controlled manual execution.
+3. Save and run one controlled execution.
 4. Remove the temporary reset block.
 5. Save again.
 6. Confirm production settings are restored before real sending.
 
 ## Change Settings
 
-Edit `Check Daily Limit`.
+Edit `Check Daily Limit And Runner State`.
 
 Change the daily limit:
 
@@ -122,7 +145,7 @@ let MIN_BATCH_SIZE = 9;
 let MAX_BATCH_SIZE = 18;
 ```
 
-Change batch delay:
+Change batch interval:
 
 ```javascript
 let MIN_BATCH_DELAY_MINUTES = 5;

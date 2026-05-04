@@ -1,31 +1,32 @@
 # Gmail Draft Batch Sender for n8n
 
-This project runs a self-hosted n8n instance with Docker Compose and imports a manual workflow that sends existing Gmail drafts from one Gmail account in randomized batches.
+This project runs a self-hosted n8n instance with Docker Compose and imports a workflow that sends existing Gmail drafts from one Gmail account in randomized batches.
 
 The workflow sends only the drafts already in Gmail Drafts. It does not create new emails, does not edit email content, does not manually delete drafts, does not use Gemini, and sends drafts through the Gmail API `users.drafts.send` endpoint.
 
-This is not Gmail native Schedule Send. Drafts remain in Gmail until you manually run this workflow and the workflow sends them.
+This is not Gmail native Schedule Send. Drafts remain in Gmail until this workflow sends them.
 
 Test mode includes a subject prefix safety filter. When `FORCE_TEST_MODE = true`, the workflow fetches draft metadata and only sends drafts whose subject starts with `[N8N TEST]`. Production mode does not require that prefix unless you intentionally keep test mode enabled or customize the filter.
 
-## Manual Operation
+## How It Runs
 
-There is no weekday schedule and no 10:00 AM to 4:00 PM sending window. Docker and n8n must be running, then you start a sending session by opening the workflow in n8n and clicking `Execute Workflow`.
+The Manual Trigger starts or resumes a sending session. Click `Execute Workflow` once to start the first batch.
 
-The workflow keeps looping during that same manual execution until one of these happens:
+After that, the Schedule Trigger runs every 1 minute while the workflow is active. It checks workflow static data and only sends the next batch when `sendingEnabled = true` and the current time is at or after `nextBatchAllowedAt`.
 
-- 300 drafts have been sent for the current Eastern calendar day
-- No Gmail drafts remain
-- You manually stop the workflow execution
-- Gmail or the Gmail API returns an error
+The workflow sends at most one batch per execution. It no longer relies on a long-running `Wait Random Batch Delay` loop between batches. After each batch, it stores a new `nextBatchAllowedAt` value 5 to 7 minutes in the future, then the execution stops cleanly.
+
+n8n and Docker must be running, and the workflow must be active, for the Schedule Trigger to continue batches automatically.
 
 ## Production Settings
 
-- Trigger: manual execution only
 - Daily limit: 300 drafts per Eastern calendar day
 - Batch size: random 9 to 18 drafts
 - Per-email delay: random 8 to 25 seconds
-- Batch delay: random 5 to 7 minutes
+- Batch delay: random 5 to 7 minutes, controlled by `nextBatchAllowedAt`
+- Schedule check: every 1 minute
+
+The workflow stops automatic sending by setting `sendingEnabled = false` when the daily limit is reached, when no drafts remain, or when a Gmail/API error is logged.
 
 Gmail limits still apply. This workflow does not attempt to bypass Gmail sending limits, and Gmail may throttle or block sending based on account type, reputation, recipient patterns, or other Google policy checks.
 
@@ -52,11 +53,11 @@ docker compose up -d
 
 5. Open `http://localhost:5678`.
 6. Import or update `workflows/gmail_draft_batch_sender.json`.
-7. Create and attach a Google OAuth2 API credential to:
+7. Attach a Google OAuth2 API credential to:
    - `List Gmail Drafts`
    - `Get Draft Metadata`
    - `Send Draft`
-8. Test with harmless drafts.
-9. For actual sending, open the workflow and click `Execute Workflow` manually whenever you want to start a sending session.
+8. Activate the workflow.
+9. Click `Execute Workflow` once to start a sending session.
 
 Read the docs in `docs/` before running against real drafts.

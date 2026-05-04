@@ -24,7 +24,7 @@ In `FORCE_TEST_MODE`, the workflow fetches draft metadata and only sends drafts 
 
 ## Temporary Test Settings
 
-In `Check Daily Limit`, temporarily set:
+In `Check Daily Limit And Runner State`, keep:
 
 ```javascript
 const FORCE_TEST_MODE = true;
@@ -48,8 +48,9 @@ Do not turn `FORCE_TEST_MODE` off until testing is complete.
    - `List Gmail Drafts`
    - `Get Draft Metadata`
    - `Send Draft`
-3. Click `Execute Workflow`.
-4. Confirm only `[N8N TEST]` drafts are sent.
+3. Activate the workflow.
+4. Click `Execute Workflow` once.
+5. Confirm only `[N8N TEST]` drafts are sent.
 
 ## Confirm Results
 
@@ -63,12 +64,15 @@ Check Gmail:
 
 Check n8n:
 
-- `Check Daily Limit` outputs `FORCE_TEST_MODE_ACTIVE`.
-- `Check Daily Limit` includes `testSubjectPrefix`.
+- `Check Daily Limit And Runner State` outputs `FORCE_TEST_MODE_ACTIVE`.
+- `Check Daily Limit And Runner State` includes `testSubjectPrefix`.
 - `Apply Test Subject Filter` only passes subjects starting with `[N8N TEST]`.
 - `Increment Daily Counter` shows `sentToday` increasing after successful sends.
-- The workflow stops at the test daily limit of 2, or stops earlier if no matching test drafts remain.
+- `Set Next Batch Time And Session State` returns `FORCE_TEST_MODE_BATCH_COMPLETE`.
+- `sendingEnabled` is `false` after the test batch.
 - `Send Draft` uses `users.drafts.send`.
+
+Test mode should not keep sending real drafts. It disables the session after one safe test batch, and the subject filter prevents non-test drafts from reaching `Send Draft`.
 
 ## Restore Production Settings
 
@@ -80,14 +84,14 @@ const FORCE_TEST_MODE = false;
 
 Confirm production settings:
 
-- Manual execution only
+- Manual start plus active Schedule Trigger continuation
 - Daily limit: 300 every day
 - Batch size: random 9 to 18
-- Batch delay: random 5 to 7 minutes
+- Batch interval: random 5 to 7 minutes
 - Per-email delay: random 8 to 25 seconds
 
 Production mode does not require the `[N8N TEST]` subject prefix unless you intentionally keep test mode enabled or customize the filter.
 
 ## Real Sending
 
-After confirming the test behavior and restoring production settings, open the workflow and click `Execute Workflow` manually when you want to start a real sending session. Gmail limits still apply, and Gmail may throttle or block sending even when the workflow is operating as configured.
+After confirming the test behavior and restoring production settings, activate the workflow and click `Execute Workflow` once when you want to start a real sending session. Gmail limits still apply, and Gmail may throttle or block sending even when the workflow is operating as configured.
