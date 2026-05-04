@@ -2,7 +2,8 @@
 
 ## Behavior
 
-- Manual Trigger starts or resumes a sending session
+- Webhook Trigger starts the production sending session
+- Manual Trigger is for testing/debugging only
 - Schedule Trigger runs every 1 minute as the automatic runner
 - Daily limit: 300 drafts per Eastern calendar date
 - Batch size: random 9 to 18 drafts
@@ -12,10 +13,10 @@
 The workflow sends at most one batch per execution:
 
 ```text
-Manual start or scheduled check -> check runner state -> list drafts -> optional test metadata filter -> send one batch -> set nextBatchAllowedAt -> stop
+Webhook start or scheduled check -> check runner state -> list drafts -> optional test metadata filter -> send one batch -> set nextBatchAllowedAt -> stop
 ```
 
-It no longer uses a long-running `Wait Random Batch Delay` loop. The only Wait node left is the short per-email delay inside the current batch.
+It does not use a long-running `Wait Random Batch Delay` loop. The only Wait node left is the short per-email delay inside the current batch.
 
 Test mode includes a subject prefix safety filter. When `FORCE_TEST_MODE = true`, the workflow only sends drafts whose subject starts with `[N8N TEST]`. Test mode disables `sendingEnabled` after one safe test batch. Production mode does not use that prefix filter unless you intentionally keep test mode enabled or customize the filter.
 
@@ -35,8 +36,6 @@ JSON body:
 }
 ```
 
-The draft ID belongs in the JSON body, not in the URL path.
-
 ## Start Docker
 
 1. Start Docker Desktop.
@@ -48,46 +47,72 @@ docker compose up -d
 
 3. Open `http://localhost:5678`.
 
+## Publish the Workflow
+
+Activate/publish the workflow in n8n. The production webhook URL only works while the workflow is active/published.
+
 ## Start Sending
 
-1. Confirm the workflow is active.
-2. Open the workflow.
-3. Click `Execute Workflow` once.
+Open this URL:
 
-The manual run sets `sendingEnabled = true`, sends the first batch if the daily limit allows, and stores the next randomized batch time. After that, the active Schedule Trigger continues automatically.
+```text
+http://localhost:5678/webhook/start-gmail-draft-sender
+```
 
-## Confirm Runner State
+The webhook runs `Start Sending Session From Webhook`, sets `sendingEnabled = true`, clears `nextBatchAllowedAt`, and sends the first batch immediately if the daily limit allows.
 
-Open the latest execution and inspect:
+After that, the active Schedule Trigger continues automatically.
+
+If scheduled executions show:
+
+```text
+reason: SENDING_DISABLED
+sendingEnabled: false
+```
+
+call the webhook start URL again.
+
+## Confirm Automatic Continuation
+
+Open the latest executions and inspect:
 
 - `Check Daily Limit And Runner State`
 - `Set Next Batch Time And Session State`
 
 Useful fields:
 
+- `triggerType`
 - `sendingEnabled`
 - `nextBatchAllowedAt`
 - `sentToday`
 - `dailyLimit`
 - `reason`
 
-`NEXT_BATCH_SCHEDULED` means the next one-minute schedule checks will wait until `nextBatchAllowedAt`.
+Expected flow:
+
+- Webhook execution: `triggerType = webhook_start`, `reason = WEBHOOK_SESSION_STARTED`
+- After batch: `reason = NEXT_BATCH_SCHEDULED`, with `nextBatchAllowedAt` set
+- Schedule executions before due time: `reason = NOT_DUE_YET`
+- Due schedule execution: `triggerType = schedule`, `reason = SCHEDULED_BATCH_DUE`
 
 During an active batch, `Check Daily Limit And Runner State` temporarily reserves `nextBatchAllowedAt` to prevent overlapping scheduled executions. `Set Next Batch Time And Session State` overwrites it with the real 5 to 7 minute next-batch time when the batch finishes.
 
 ## Stop Sending
 
-Deactivate the workflow in n8n.
+Deactivate/unpublish the workflow in n8n.
 
-This stops future Schedule Trigger runs. If a batch execution is currently running, open the execution and stop it if needed. Messages already sent by Gmail remain sent.
+This stops future webhook and Schedule Trigger runs. If a batch execution is currently running, open the execution and stop it if needed. Messages already sent by Gmail remain sent.
 
 ## Resume Sending
 
-1. Activate the workflow.
-2. Open the workflow.
-3. Click `Execute Workflow` once.
+1. Activate/publish the workflow.
+2. Open:
 
-Manual execution starts or resumes the session and allows the next batch immediately if the daily limit allows.
+```text
+http://localhost:5678/webhook/start-gmail-draft-sender
+```
+
+The webhook starts or resumes the session and allows the next batch immediately if the daily limit allows.
 
 ## Static Data
 

@@ -49,8 +49,6 @@ In n8n:
 3. Select `workflows/gmail_draft_batch_sender.json`.
 4. Save the workflow.
 
-If you previously imported the long-running manual version, replace it with this updated scheduled runner workflow.
-
 ## 7. Create or Verify Google OAuth Credential
 
 Follow `docs/google_oauth_setup.md`.
@@ -89,11 +87,14 @@ JSON body:
 
 Create 2 harmless drafts addressed to an alternate email you control. Follow `docs/testing_checklist.md`.
 
-## 10. Activate the Workflow
+## 10. Publish the Workflow
 
-Activate the workflow so the Schedule Trigger can run every minute.
+Activate/publish the workflow so both production triggers are registered:
 
-The Schedule Trigger is the automatic runner. It does not send every minute; it only sends when `sendingEnabled = true` and `now >= nextBatchAllowedAt`.
+- `Start Sending Webhook`
+- `Schedule Trigger`
+
+The Schedule Trigger runs every minute. It does not send every minute; it only sends when `sendingEnabled = true` and `now >= nextBatchAllowedAt`.
 
 ## 11. Start a Sending Session
 
@@ -107,8 +108,13 @@ docker compose up -d
 ```
 
 3. Open `http://localhost:5678`.
-4. Confirm the workflow is active.
-5. Open the Gmail Draft Batch Sender workflow.
-6. Click `Execute Workflow` once.
+4. Confirm the workflow is active/published.
+5. Open this URL in your browser:
 
-The manual execution sends the first batch if allowed and sets `sendingEnabled = true`. After that, scheduled one-minute checks continue later batches automatically.
+```text
+http://localhost:5678/webhook/start-gmail-draft-sender
+```
+
+The webhook starts the session, sends the first batch if allowed, and lets scheduled one-minute checks continue later batches automatically.
+
+Manual Trigger is for testing/debugging only.

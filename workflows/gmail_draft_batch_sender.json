@@ -34,6 +34,23 @@
     },
     {
       "parameters": {
+        "httpMethod": "GET",
+        "path": "start-gmail-draft-sender",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "e8a09e7d-d532-4e4a-bf44-f5a75d499033",
+      "name": "Start Sending Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1500,
+        -400
+      ],
+      "webhookId": "f47a67c2-dc3a-4620-92dd-f5bd66b4f3ef"
+    },
+    {
+      "parameters": {
         "jsCode": "// Manual runs explicitly start or resume the sending session.\nreturn [\n  {\n    json: {\n      runnerTriggerType: 'manual',\n    },\n  },\n];"
       },
       "id": "7cf07d42-285f-4d5f-b923-cc4b7877f306",
@@ -43,6 +60,19 @@
       "position": [
         -1240,
         -140
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nstaticData.sendingEnabled = true;\nstaticData.nextBatchAllowedAt = null;\n\nreturn [\n  {\n    json: {\n      runnerTriggerType: 'webhook_start',\n    },\n  },\n];"
+      },
+      "id": "ce756311-c73b-485c-a574-33396cd76c69",
+      "name": "Start Sending Session From Webhook",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1240,
+        -400
       ]
     },
     {
@@ -60,7 +90,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const TIME_ZONE = 'America/New_York';\nconst FORCE_TEST_MODE = false;\nconst TEST_SUBJECT_PREFIX = '[N8N TEST]';\nconst TEST_DAILY_LIMIT = 2;\nconst TEST_MIN_BATCH_SIZE = 1;\nconst TEST_MAX_BATCH_SIZE = 2;\nconst TEST_DRAFT_SCAN_LIMIT = 100;\nconst DAILY_LIMIT = 300;\nlet MIN_BATCH_SIZE = 9;\nlet MAX_BATCH_SIZE = 18;\nlet MIN_EMAIL_DELAY_SECONDS = 8;\nlet MAX_EMAIL_DELAY_SECONDS = 25;\nlet MIN_BATCH_DELAY_MINUTES = 5;\nlet MAX_BATCH_DELAY_MINUTES = 7;\n\n// Testing notes:\n// - FORCE_TEST_MODE sends only drafts whose subject starts with TEST_SUBJECT_PREFIX.\n// - Test mode uses TEST_DAILY_LIMIT and TEST_* batch sizing, then disables sending after one safe test batch.\n// - Set FORCE_TEST_MODE back to false before production.\n// - This workflow sends existing Gmail drafts through users.drafts.send and does not create, edit, or delete drafts manually.\n\nconst staticData = $getWorkflowStaticData('global');\nconst now = new Date();\nconst triggerType = $json.runnerTriggerType || 'schedule';\nconst isManualTrigger = triggerType === 'manual';\n\nfunction randomInt(min, max) {\n  return Math.floor(Math.random() * (max - min + 1)) + min;\n}\n\nfunction getEasternDateKey(date) {\n  const parts = new Intl.DateTimeFormat('en-CA', {\n    timeZone: TIME_ZONE,\n    year: 'numeric',\n    month: '2-digit',\n    day: '2-digit',\n  }).formatToParts(date);\n\n  const values = Object.fromEntries(\n    parts\n      .filter((part) => part.type !== 'literal')\n      .map((part) => [part.type, part.value]),\n  );\n\n  return `${values.year}-${values.month}-${values.day}`;\n}\n\nconst todayKey = getEasternDateKey(now);\n\n// Reset sentToday when the Eastern date changes, but do not automatically start a new session.\nif (staticData.date !== todayKey) {\n  staticData.date = todayKey;\n  staticData.sentToday = 0;\n  staticData.currentBatchSentCount = 0;\n}\n\nif (isManualTrigger) {\n  staticData.sendingEnabled = true;\n  staticData.nextBatchAllowedAt = null;\n}\n\nconst dailyLimit = FORCE_TEST_MODE ? TEST_DAILY_LIMIT : DAILY_LIMIT;\nconst minBatchSize = FORCE_TEST_MODE ? TEST_MIN_BATCH_SIZE : MIN_BATCH_SIZE;\nconst maxBatchSize = FORCE_TEST_MODE ? TEST_MAX_BATCH_SIZE : MAX_BATCH_SIZE;\nconst sentToday = Number(staticData.sentToday || 0);\nconst remainingToday = Math.max(dailyLimit - sentToday, 0);\nconst sendingEnabled = Boolean(staticData.sendingEnabled);\nconst nextBatchAllowedAt = staticData.nextBatchAllowedAt || null;\nconst nextBatchTime = nextBatchAllowedAt ? Date.parse(nextBatchAllowedAt) : 0;\nconst batchDue = isManualTrigger || !nextBatchAllowedAt || Number.isNaN(nextBatchTime) || now.getTime() >= nextBatchTime;\n\nlet allowed = false;\nlet reason = '';\n\nif (sentToday >= dailyLimit) {\n  staticData.sendingEnabled = false;\n  allowed = false;\n  reason = 'DAILY_LIMIT_REACHED';\n} else if (!sendingEnabled) {\n  allowed = false;\n  reason = isManualTrigger ? 'SENDING_SESSION_NOT_ENABLED' : 'SENDING_DISABLED';\n} else if (!batchDue) {\n  allowed = false;\n  reason = `WAITING_UNTIL_NEXT_BATCH_ALLOWED_AT: ${nextBatchAllowedAt}`;\n} else {\n  allowed = true;\n  reason = FORCE_TEST_MODE ? 'FORCE_TEST_MODE_ACTIVE' : (isManualTrigger ? 'MANUAL_SESSION_STARTED' : 'SCHEDULED_BATCH_DUE');\n}\n\nconst batchSize = allowed ? Math.min(randomInt(minBatchSize, maxBatchSize), remainingToday) : 0;\nconst listMaxResults = FORCE_TEST_MODE ? TEST_DRAFT_SCAN_LIMIT : batchSize;\n\nif (allowed) {\n  staticData.currentBatchSentCount = 0;\n  staticData.currentBatchRequestedSize = batchSize;\n  staticData.currentBatchSelectedDraftCount = 0;\n  staticData.currentBatchForceTestMode = FORCE_TEST_MODE;\n\n  // Reserve a temporary guard so the one-minute schedule cannot overlap the active batch.\n  // Set Next Batch Time And Session State overwrites this after the batch finishes.\n  const overlapGuardSeconds = (MAX_BATCH_SIZE * MAX_EMAIL_DELAY_SECONDS) + (MAX_BATCH_DELAY_MINUTES * 60) + 120;\n  staticData.nextBatchAllowedAt = new Date(now.getTime() + overlapGuardSeconds * 1000).toISOString();\n}\n\nreturn [\n  {\n    json: {\n      allowed,\n      reason,\n      todayKey,\n      sentToday,\n      dailyLimit,\n      remainingToday,\n      batchSize,\n      listMaxResults,\n      minEmailDelaySeconds: MIN_EMAIL_DELAY_SECONDS,\n      maxEmailDelaySeconds: MAX_EMAIL_DELAY_SECONDS,\n      minBatchDelayMinutes: MIN_BATCH_DELAY_MINUTES,\n      maxBatchDelayMinutes: MAX_BATCH_DELAY_MINUTES,\n      sendingEnabled: Boolean(staticData.sendingEnabled),\n      nextBatchAllowedAt: staticData.nextBatchAllowedAt || null,\n      forceTestMode: FORCE_TEST_MODE,\n      testSubjectPrefix: TEST_SUBJECT_PREFIX,\n      triggerType,\n    },\n  },\n];"
+        "jsCode": "const TIME_ZONE = 'America/New_York';\nconst FORCE_TEST_MODE = false;\nconst TEST_SUBJECT_PREFIX = '[N8N TEST]';\nconst TEST_DAILY_LIMIT = 2;\nconst TEST_MIN_BATCH_SIZE = 1;\nconst TEST_MAX_BATCH_SIZE = 2;\nconst TEST_DRAFT_SCAN_LIMIT = 100;\nconst DAILY_LIMIT = 300;\nlet MIN_BATCH_SIZE = 9;\nlet MAX_BATCH_SIZE = 18;\nlet MIN_EMAIL_DELAY_SECONDS = 8;\nlet MAX_EMAIL_DELAY_SECONDS = 25;\nlet MIN_BATCH_DELAY_MINUTES = 5;\nlet MAX_BATCH_DELAY_MINUTES = 7;\n\n// Testing notes:\n// - FORCE_TEST_MODE sends only drafts whose subject starts with TEST_SUBJECT_PREFIX.\n// - Test mode uses TEST_DAILY_LIMIT and TEST_* batch sizing, then disables sending after one safe test batch.\n// - Set FORCE_TEST_MODE back to false before production.\n// - This workflow sends existing Gmail drafts through users.drafts.send and does not create, edit, or delete drafts manually.\n\nconst staticData = $getWorkflowStaticData('global');\nconst now = new Date();\nconst triggerType = $json.runnerTriggerType || 'schedule';\nconst isStartTrigger = triggerType === 'manual' || triggerType === 'webhook_start';\n\nfunction randomInt(min, max) {\n  return Math.floor(Math.random() * (max - min + 1)) + min;\n}\n\nfunction getEasternDateKey(date) {\n  const parts = new Intl.DateTimeFormat('en-CA', {\n    timeZone: TIME_ZONE,\n    year: 'numeric',\n    month: '2-digit',\n    day: '2-digit',\n  }).formatToParts(date);\n\n  const values = Object.fromEntries(\n    parts\n      .filter((part) => part.type !== 'literal')\n      .map((part) => [part.type, part.value]),\n  );\n\n  return `${values.year}-${values.month}-${values.day}`;\n}\n\nconst todayKey = getEasternDateKey(now);\n\n// Reset sentToday when the Eastern date changes, but do not automatically start a new session.\nif (staticData.date !== todayKey) {\n  staticData.date = todayKey;\n  staticData.sentToday = 0;\n  staticData.currentBatchSentCount = 0;\n}\n\nif (isStartTrigger) {\n  staticData.sendingEnabled = true;\n  staticData.nextBatchAllowedAt = null;\n}\n\nconst dailyLimit = FORCE_TEST_MODE ? TEST_DAILY_LIMIT : DAILY_LIMIT;\nconst minBatchSize = FORCE_TEST_MODE ? TEST_MIN_BATCH_SIZE : MIN_BATCH_SIZE;\nconst maxBatchSize = FORCE_TEST_MODE ? TEST_MAX_BATCH_SIZE : MAX_BATCH_SIZE;\nconst sentToday = Number(staticData.sentToday || 0);\nconst remainingToday = Math.max(dailyLimit - sentToday, 0);\nconst sendingEnabled = Boolean(staticData.sendingEnabled);\nconst nextBatchAllowedAt = staticData.nextBatchAllowedAt || null;\nconst nextBatchTime = nextBatchAllowedAt ? Date.parse(nextBatchAllowedAt) : 0;\nconst batchDue = isStartTrigger || !nextBatchAllowedAt || Number.isNaN(nextBatchTime) || now.getTime() >= nextBatchTime;\n\nlet allowed = false;\nlet reason = '';\n\nif (sentToday >= dailyLimit) {\n  staticData.sendingEnabled = false;\n  allowed = false;\n  reason = 'DAILY_LIMIT_REACHED';\n} else if (!sendingEnabled) {\n  allowed = false;\n  reason = 'SENDING_DISABLED';\n} else if (!batchDue) {\n  allowed = false;\n  reason = 'NOT_DUE_YET';\n} else {\n  allowed = true;\n  reason = FORCE_TEST_MODE\n    ? 'FORCE_TEST_MODE_ACTIVE'\n    : (triggerType === 'webhook_start' ? 'WEBHOOK_SESSION_STARTED' : (triggerType === 'manual' ? 'MANUAL_SESSION_STARTED' : 'SCHEDULED_BATCH_DUE'));\n}\n\nconst batchSize = allowed ? Math.min(randomInt(minBatchSize, maxBatchSize), remainingToday) : 0;\nconst listMaxResults = FORCE_TEST_MODE ? TEST_DRAFT_SCAN_LIMIT : batchSize;\n\nif (allowed) {\n  staticData.currentBatchSentCount = 0;\n  staticData.currentBatchRequestedSize = batchSize;\n  staticData.currentBatchSelectedDraftCount = 0;\n  staticData.currentBatchForceTestMode = FORCE_TEST_MODE;\n\n  // Reserve a temporary guard so the one-minute schedule cannot overlap the active batch.\n  // Set Next Batch Time And Session State overwrites this after the batch finishes.\n  const overlapGuardSeconds = (MAX_BATCH_SIZE * MAX_EMAIL_DELAY_SECONDS) + (MAX_BATCH_DELAY_MINUTES * 60) + 120;\n  staticData.nextBatchAllowedAt = new Date(now.getTime() + overlapGuardSeconds * 1000).toISOString();\n}\n\nreturn [\n  {\n    json: {\n      allowed,\n      reason,\n      todayKey,\n      sentToday,\n      dailyLimit,\n      remainingToday,\n      batchSize,\n      listMaxResults,\n      minEmailDelaySeconds: MIN_EMAIL_DELAY_SECONDS,\n      maxEmailDelaySeconds: MAX_EMAIL_DELAY_SECONDS,\n      minBatchDelayMinutes: MIN_BATCH_DELAY_MINUTES,\n      maxBatchDelayMinutes: MAX_BATCH_DELAY_MINUTES,\n      sendingEnabled: Boolean(staticData.sendingEnabled),\n      nextBatchAllowedAt: staticData.nextBatchAllowedAt || null,\n      forceTestMode: FORCE_TEST_MODE,\n      testSubjectPrefix: TEST_SUBJECT_PREFIX,\n      triggerType,\n    },\n  },\n];"
       },
       "id": "e93b4eea-68a6-43a5-a3ff-936d871c4c51",
       "name": "Check Daily Limit And Runner State",
@@ -349,6 +379,28 @@
         [
           {
             "node": "Check Scheduled Runner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Sending Webhook": {
+      "main": [
+        [
+          {
+            "node": "Start Sending Session From Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Sending Session From Webhook": {
+      "main": [
+        [
+          {
+            "node": "Check Daily Limit And Runner State",
             "type": "main",
             "index": 0
           }

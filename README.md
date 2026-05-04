@@ -10,13 +10,21 @@ Test mode includes a subject prefix safety filter. When `FORCE_TEST_MODE = true`
 
 ## How It Runs
 
-The Manual Trigger starts or resumes a sending session. Click `Execute Workflow` once to start the first batch.
+The production start button is a webhook:
+
+```text
+http://localhost:5678/webhook/start-gmail-draft-sender
+```
+
+Open that URL after the workflow is active/published. The webhook sets `sendingEnabled = true`, clears `nextBatchAllowedAt`, and starts the first batch immediately if the daily limit allows.
 
 After that, the Schedule Trigger runs every 1 minute while the workflow is active. It checks workflow static data and only sends the next batch when `sendingEnabled = true` and the current time is at or after `nextBatchAllowedAt`.
 
-The workflow sends at most one batch per execution. It no longer relies on a long-running `Wait Random Batch Delay` loop between batches. After each batch, it stores a new `nextBatchAllowedAt` value 5 to 7 minutes in the future, then the execution stops cleanly.
+The workflow sends at most one batch per execution. It does not rely on a long-running `Wait Random Batch Delay` loop between batches. After each batch, it stores a new `nextBatchAllowedAt` value 5 to 7 minutes in the future, then the execution stops cleanly.
 
-n8n and Docker must be running, and the workflow must be active, for the Schedule Trigger to continue batches automatically.
+Manual Trigger remains for testing/debugging only. If scheduled executions show `SENDING_DISABLED`, call the webhook start URL.
+
+n8n and Docker must be running, and the workflow must be active, for the webhook and Schedule Trigger to work.
 
 ## Production Settings
 
@@ -29,16 +37,6 @@ n8n and Docker must be running, and the workflow must be active, for the Schedul
 The workflow stops automatic sending by setting `sendingEnabled = false` when the daily limit is reached, when no drafts remain, or when a Gmail/API error is logged.
 
 Gmail limits still apply. This workflow does not attempt to bypass Gmail sending limits, and Gmail may throttle or block sending based on account type, reputation, recipient patterns, or other Google policy checks.
-
-## Files
-
-- `docker-compose.yml`: local n8n Docker service
-- `.env.example`: example environment file with `N8N_ENCRYPTION_KEY`
-- `workflows/gmail_draft_batch_sender.json`: importable n8n workflow
-- `docs/setup.md`: local setup steps
-- `docs/google_oauth_setup.md`: Google Cloud OAuth setup
-- `docs/workflow_runbook.md`: daily operation and tuning
-- `docs/testing_checklist.md`: safe test checklist
 
 ## Quick Start
 
@@ -57,7 +55,11 @@ docker compose up -d
    - `List Gmail Drafts`
    - `Get Draft Metadata`
    - `Send Draft`
-8. Activate the workflow.
-9. Click `Execute Workflow` once to start a sending session.
+8. Activate/publish the workflow.
+9. Start production sending by opening:
+
+```text
+http://localhost:5678/webhook/start-gmail-draft-sender
+```
 
 Read the docs in `docs/` before running against real drafts.

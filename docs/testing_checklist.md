@@ -41,16 +41,23 @@ const TEST_MAX_BATCH_SIZE = 2;
 
 Do not turn `FORCE_TEST_MODE` off until testing is complete.
 
-## Manual Test
+## Webhook Test
 
 1. Save the workflow.
 2. Confirm the Google OAuth2 API credential is attached to:
    - `List Gmail Drafts`
    - `Get Draft Metadata`
    - `Send Draft`
-3. Activate the workflow.
-4. Click `Execute Workflow` once.
+3. Activate/publish the workflow.
+4. Open:
+
+```text
+http://localhost:5678/webhook/start-gmail-draft-sender
+```
+
 5. Confirm only `[N8N TEST]` drafts are sent.
+
+Manual Trigger is for testing/debugging only. The production-style test should use the webhook because it writes static data for the published workflow.
 
 ## Confirm Results
 
@@ -70,6 +77,7 @@ Check n8n:
 - `Increment Daily Counter` shows `sentToday` increasing after successful sends.
 - `Set Next Batch Time And Session State` returns `FORCE_TEST_MODE_BATCH_COMPLETE`.
 - `sendingEnabled` is `false` after the test batch.
+- Later scheduled executions should show `SENDING_DISABLED` until the webhook is called again.
 - `Send Draft` uses `users.drafts.send`.
 
 Test mode should not keep sending real drafts. It disables the session after one safe test batch, and the subject filter prevents non-test drafts from reaching `Send Draft`.
@@ -84,7 +92,7 @@ const FORCE_TEST_MODE = false;
 
 Confirm production settings:
 
-- Manual start plus active Schedule Trigger continuation
+- Webhook start plus active Schedule Trigger continuation
 - Daily limit: 300 every day
 - Batch size: random 9 to 18
 - Batch interval: random 5 to 7 minutes
@@ -94,4 +102,10 @@ Production mode does not require the `[N8N TEST]` subject prefix unless you inte
 
 ## Real Sending
 
-After confirming the test behavior and restoring production settings, activate the workflow and click `Execute Workflow` once when you want to start a real sending session. Gmail limits still apply, and Gmail may throttle or block sending even when the workflow is operating as configured.
+After confirming the test behavior and restoring production settings, activate/publish the workflow and open:
+
+```text
+http://localhost:5678/webhook/start-gmail-draft-sender
+```
+
+Gmail limits still apply, and Gmail may throttle or block sending even when the workflow is operating as configured.
